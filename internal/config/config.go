@@ -18,7 +18,8 @@ type Config struct {
 	APIHost          string
 	AllowURLs        []string
 	BlockURLs        []string
-	ListItemSize     int
+	ListItemLimit    int // total limit across all lists (default 300000)
+	ListItemSize     int // chunk size per list (hardcoded 1000, Cloudflare's limit)
 	DryRun           bool
 	BlockPageEnabled bool
 	BlockBasedOnSNI  bool
@@ -37,14 +38,13 @@ func LoadFromEnv() (*Config, error) {
 	acctEmail := strings.TrimSpace(os.Getenv("CLOUDFLARE_ACCOUNT_EMAIL"))
 
 	// Support legacy Node env var name CLOUDFLARE_LIST_ITEM_LIMIT as alias
-	listItemSize := 1000
-	if s := os.Getenv("CLOUDFLARE_LIST_ITEM_SIZE"); s != "" {
+	// IMPORTANT: LIST_ITEM_LIMIT is the TOTAL limit across all lists (default 300000)
+	// LIST_ITEM_SIZE is the chunk size PER LIST (hardcoded 1000 to match Cloudflare's limit)
+	listItemSize := 1000 // Cloudflare's per-list limit, do not change
+	listItemLimit := 300000
+	if s := os.Getenv("CLOUDFLARE_LIST_ITEM_LIMIT"); s != "" {
 		if v, err := strconv.Atoi(s); err == nil && v > 0 {
-			listItemSize = v
-		}
-	} else if s := os.Getenv("CLOUDFLARE_LIST_ITEM_LIMIT"); s != "" {
-		if v, err := strconv.Atoi(s); err == nil && v > 0 {
-			listItemSize = v
+			listItemLimit = v
 		}
 	}
 
@@ -93,6 +93,7 @@ func LoadFromEnv() (*Config, error) {
 		APIHost:          apiHost,
 		AllowURLs:        allow,
 		BlockURLs:        block,
+		ListItemLimit:    listItemLimit,
 		ListItemSize:     listItemSize,
 		DryRun:           dry,
 		BlockPageEnabled: bpe,

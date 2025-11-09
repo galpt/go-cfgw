@@ -3,6 +3,7 @@ package downloader
 import (
 	"bufio"
 	"context"
+	"fmt"
 	"io"
 	"net/http"
 	"regexp"
@@ -38,12 +39,21 @@ func (d *Downloader) DownloadAndProcess(ctx context.Context, cfg *config.Config)
 	blockSet := map[string]struct{}{}
 
 	// If no URLs were provided, return empty lists (caller may decide defaults)
-	for _, url := range cfg.AllowURLs {
+	if len(cfg.AllowURLs) > 0 {
+		d.logger.Infof("Downloading %d allowlist source(s)...", len(cfg.AllowURLs))
+	}
+	for i, url := range cfg.AllowURLs {
+		d.logger.Infof("  [%d/%d] Fetching %s", i+1, len(cfg.AllowURLs), url)
 		if err := d.fetchIntoSet(ctx, url, allowSet); err != nil {
 			return nil, nil, err
 		}
 	}
-	for _, url := range cfg.BlockURLs {
+
+	if len(cfg.BlockURLs) > 0 {
+		d.logger.Infof("Downloading %d blocklist source(s)...", len(cfg.BlockURLs))
+	}
+	for i, url := range cfg.BlockURLs {
+		d.logger.Infof("  [%d/%d] Fetching %s", i+1, len(cfg.BlockURLs), url)
 		if err := d.fetchIntoSet(ctx, url, blockSet); err != nil {
 			return nil, nil, err
 		}
@@ -77,9 +87,10 @@ func (d *Downloader) fetchIntoSet(ctx context.Context, url string, dest map[stri
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		d.logger.Errorf("non-2xx response %d from %s", resp.StatusCode, url)
-		return err
+		return fmt.Errorf("http %d from %s", resp.StatusCode, url)
 	}
 
+	count := 0
 	reader := bufio.NewReader(resp.Body)
 	for {
 		line, err := reader.ReadString('\n')
@@ -99,12 +110,16 @@ func (d *Downloader) fetchIntoSet(ctx context.Context, url string, dest map[stri
 		// Basic normalization similar to original script
 		normalized := normalizeLine(line)
 		if hostPattern.MatchString(normalized) {
-			dest[normalized] = struct{}{}
+			if _, exists := dest[normalized]; !exists {
+				dest[normalized] = struct{}{}
+				count++
+			}
 		}
 		if err == io.EOF {
 			break
 		}
 	}
+	d.logger.Infof("    Added %d unique domain(s) from this source", count)
 	return nil
 }
 
@@ -120,6 +135,9 @@ func normalizeLine(line string) string {
 	s = strings.TrimPrefix(s, "^")
 	// Remove any trailing metadata used by some lists
 	s = strings.Split(s, " ")[0]
-	s = strings.Trim(s, "\t\r\n ")
+	// Remove common trailing characters used in adblock/hosts lists (e.g. caret '^', path separators)
+	s = strings.TrimRight(s, "^/\t\r\n ")
+	// Remove any surrounding pipe characters that might remain
+	s = strings.Trim(s, "|\t\r\n ")
 	return strings.ToLower(s)
 }
