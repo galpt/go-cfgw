@@ -9,7 +9,6 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	backoff "github.com/cenkalti/backoff/v4"
@@ -18,13 +17,13 @@ import (
 )
 
 // Client is a small Cloudflare Gateway API client with retry/backoff and rate-limit handling.
+// The HTTP client is thread-safe. Currently used single-threaded, but safe for concurrent use.
 type Client struct {
 	http    *http.Client
 	token   string
 	account string
 	host    string
 	logger  *logging.Logger
-	mu      sync.Mutex
 }
 
 func NewClient(cfg *config.Config, logger *logging.Logger) *Client {
@@ -205,7 +204,8 @@ func (c *Client) DeleteAllOldLists(ctx context.Context) error {
 			if lmap, ok := l.(map[string]any); ok {
 				listName, _ := lmap["name"].(string)
 				// Delete both old CGPS lists and any existing Go-CFGW lists
-				if strings.HasPrefix(listName, "CGPS List") ||
+				// Use Contains to catch all variations: "CGPS List", "CGPS Block List", etc.
+				if strings.Contains(listName, "CGPS") ||
 					strings.HasPrefix(listName, "Go-CFGW Block List") ||
 					strings.HasPrefix(listName, "Go-CFGW Allow List") {
 					id := lmap["id"]

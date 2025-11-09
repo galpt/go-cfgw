@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"math"
+	"strings"
 	"time"
 
 	"github.com/galpt/go-cfgw/internal/cf"
@@ -79,12 +80,15 @@ func (w *Worker) Run(ctx context.Context, cfg *config.Config, allow []string, bl
 
 	// Build wirefilter expression matching Node.js implementation
 	// Format: any(dns.domains[*] in $listID1) or any(dns.domains[*] in $listID2) or ...
-	wirefilterExpr := ""
-	for _, id := range createdListIDs {
-		wirefilterExpr += fmt.Sprintf("any(dns.domains[*] in $%s) or ", id)
+	// Use strings.Builder for efficient and safe string concatenation
+	var wirefilterBuilder strings.Builder
+	for i, id := range createdListIDs {
+		if i > 0 {
+			wirefilterBuilder.WriteString(" or ")
+		}
+		wirefilterBuilder.WriteString(fmt.Sprintf("any(dns.domains[*] in $%s)", id))
 	}
-	// Remove trailing " or "
-	wirefilterExpr = wirefilterExpr[:len(wirefilterExpr)-4]
+	wirefilterExpr := wirefilterBuilder.String()
 
 	filters := []string{"dns"}
 	if err := client.CreateOrUpdateRule(ctx, "Go-CFGW Filter Lists", wirefilterExpr, filters, cfg.BlockPageEnabled); err != nil {
@@ -97,12 +101,14 @@ func (w *Worker) Run(ctx context.Context, cfg *config.Config, allow []string, bl
 
 		// Build SNI wirefilter expression
 		// Format: any(net.sni.domains[*] in $listID1) or any(net.sni.domains[*] in $listID2) or ...
-		wirefilterSNIExpr := ""
-		for _, id := range createdListIDs {
-			wirefilterSNIExpr += fmt.Sprintf("any(net.sni.domains[*] in $%s) or ", id)
+		var wirefilterSNIBuilder strings.Builder
+		for i, id := range createdListIDs {
+			if i > 0 {
+				wirefilterSNIBuilder.WriteString(" or ")
+			}
+			wirefilterSNIBuilder.WriteString(fmt.Sprintf("any(net.sni.domains[*] in $%s)", id))
 		}
-		// Remove trailing " or "
-		wirefilterSNIExpr = wirefilterSNIExpr[:len(wirefilterSNIExpr)-4]
+		wirefilterSNIExpr := wirefilterSNIBuilder.String()
 
 		sniFilters := []string{"l4"}
 		if err := client.CreateOrUpdateRule(ctx, "Go-CFGW Filter Lists - SNI Based Filtering", wirefilterSNIExpr, sniFilters, cfg.BlockPageEnabled); err != nil {
@@ -117,6 +123,18 @@ func (w *Worker) Run(ctx context.Context, cfg *config.Config, allow []string, bl
 func (w *Worker) createListsInChunks(ctx context.Context, client *cf.Client, cfg *config.Config, baseName string, items []string) ([]string, error) {
 	size := cfg.ListItemSize
 	total := len(items)
+
+	// Safety check: ensure we have items to process
+	if total == 0 {
+		w.opts.Logger.Infof("No items to create lists for")
+		return []string{}, nil
+	}
+
+	// Safety check: ensure chunk size is valid
+	if size <= 0 {
+		return nil, fmt.Errorf("invalid chunk size: %d", size)
+	}
+
 	chunks := int(math.Ceil(float64(total) / float64(size)))
 
 	w.opts.Logger.Infof("Will create %d list(s) with chunk size %d", chunks, size)
@@ -125,12 +143,27 @@ func (w *Worker) createListsInChunks(ctx context.Context, client *cf.Client, cfg
 	for i := 0; i < chunks; i++ {
 		start := i * size
 		end := (i + 1) * size
+		// Bounds checking: ensure end doesn't exceed total length
 		if end > total {
 			end = total
 		}
+
+		// Additional safety: verify slice bounds
+		if start >= total {
+			w.opts.Logger.Warnf("Skipping chunk %d: start index %d >= total %d", i+1, start, total)
+			continue
+		}
+
 		chunk := items[start:end]
-		// convert to items expected by Cloudflare (value property)
-		payload := []map[string]any{}
+
+		// Safety check: ensure we have items in this chunk
+		if len(chunk) == 0 {
+			w.opts.Logger.Warnf("Skipping empty chunk %d", i+1)
+			continue
+		}
+
+		// Pre-allocate slice with exact capacity for efficiency
+		payload := make([]map[string]any, 0, len(chunk))
 		for _, v := range chunk {
 			payload = append(payload, map[string]any{"value": v})
 		}
@@ -151,7 +184,11 @@ func (w *Worker) createListsInChunks(ctx context.Context, client *cf.Client, cfg
 		if result, ok := resp["result"].(map[string]any); ok {
 			if id, ok := result["id"].(string); ok {
 				createdIDs = append(createdIDs, id)
+			} else {
+				w.opts.Logger.Warnf("List %s created but ID not found in response", name)
 			}
+		} else {
+			w.opts.Logger.Warnf("List %s created but result not found in response", name)
 		}
 
 		w.opts.Logger.Infof("Created %s successfully - %d list(s) remaining", name, chunks-i-1)
