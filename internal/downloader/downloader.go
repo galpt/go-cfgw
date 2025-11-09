@@ -60,7 +60,11 @@ func (d *Downloader) DownloadAndProcess(ctx context.Context, cfg *config.Config)
 }
 
 var commentPrefix = regexp.MustCompile(`^\s*(#|//|!|/\*)`)
-var hostPattern = regexp.MustCompile(`^((?=[a-z0-9-]{1,63}\.)[a-z0-9]+(-[a-z0-9]+)*\.)+[a-z]{2,63}$`)
+
+// hostPattern validates domain names without using lookaround (RE2 doesn't support
+// lookahead/lookbehind). Each label must be 1-63 chars, not start or end with '-'.
+// This pattern enforces those rules using explicit quantifiers.
+var hostPattern = regexp.MustCompile(`^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$`)
 
 func (d *Downloader) fetchIntoSet(ctx context.Context, url string, dest map[string]struct{}) error {
 	req, _ := http.NewRequestWithContext(ctx, "GET", url, nil)
